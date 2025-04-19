@@ -134,9 +134,8 @@ function generate_nginx_config {
     # 创建Nginx配置
     sudo tee /etc/nginx/sites-available/"$DOMAIN" > /dev/null << EOF
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
     listen [::]:443 ssl;
-    http2 on;
     server_name $DOMAIN;
 
     ssl_certificate     $ssl_cert;
@@ -151,7 +150,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_buffering off;
+        proxy_buffering on;
         client_max_body_size 100M;
         proxy_read_timeout 10m;
     }
