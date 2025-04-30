@@ -689,4 +689,102 @@ show_menu() {
     echo -e "6. ${YELLOW}查看当前配置${NC}"
     echo -e "7. ${YELLOW}重启NGINX服务${NC}"
     echo -e "8. ${YELLOW}测试流可用性${NC}"
-    echo -e "9. ${YELLOW}备份当前配置${NC
+    echo -e "9. ${YELLOW}备份当前配置${NC}"
+    echo -e "10. ${RED}卸载服务${NC}"
+    echo -e "0. ${RED}退出${NC}"
+    echo -e "${BLUE}=========================================${NC}"
+    echo -e "请选择操作 [0-10]:"
+}
+
+# 初始化安装
+init_setup() {
+    log "${BLUE}开始初始化安装...${NC}"
+    
+    # 创建目录结构
+    create_dirs
+    
+    # 安装必要软件
+    install_dependencies
+    
+    # 启用NGINX
+    enable_nginx
+    
+    # 设置中转源
+    set_proxy_source
+    
+    # 配置密码保护
+    setup_authentication
+    
+    # 配置域名和SSL
+    setup_domain
+    
+    # 生成NGINX配置
+    generate_nginx_config
+    
+    # 重启NGINX服务
+    reload_nginx
+    
+    # 标记为已初始化
+    echo "$(date '+%Y-%m-%d %H:%M:%S')" > "$CONFIG_DIR/initialized"
+    
+    log "${GREEN}初始化安装完成!${NC}"
+    show_config
+}
+
+# 主程序
+main() {
+    # 检查root权限
+    check_root
+    
+    # 检测操作系统
+    detect_os
+    
+    # 创建基本目录
+    create_dirs
+    
+    # 显示欢迎信息
+    log "${BLUE}欢迎使用M3U8代理中转工具!${NC}"
+    
+    # 如果是首次运行，执行初始化安装
+    if [ ! -f "$CONFIG_DIR/initialized" ]; then
+        echo "是否开始安装M3U8代理服务? [Y/n]"
+        read -p "> " start_install
+        
+        if [[ $start_install != "n" && $start_install != "N" ]]; then
+            init_setup
+        else
+            log "${YELLOW}已取消安装${NC}"
+            exit 0
+        fi
+    else
+        # 显示主菜单循环
+        while true; do
+            show_menu
+            read -p "> " choice
+            
+            case "$choice" in
+                1)  install_dependencies ;;
+                2)  set_proxy_source ;;
+                3)  setup_authentication
+                    reload_nginx ;;
+                4)  setup_domain ;;
+                5)  generate_nginx_config
+                    reload_nginx ;;
+                6)  show_config ;;
+                7)  reload_nginx ;;
+                8)  test_stream ;;
+                9)  backup_config ;;
+                10) uninstall_service ;;
+                0)  log "${GREEN}感谢使用，再见!${NC}"
+                    exit 0 ;;
+                *)  log "${RED}无效选项，请重新选择${NC}" ;;
+            esac
+            
+            echo
+            read -p "按Enter键继续..." input
+        done
+    fi
+}
+
+# 执行主程序
+main
