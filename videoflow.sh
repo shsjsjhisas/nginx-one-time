@@ -290,274 +290,6 @@ function obtain_certificate_standalone {
     return 0 # Indicate success
 }
 
-# --- Function to Generate Nginx Stream Proxy Config ---
-function generate_stream_proxy_config
-
-# 7. 创建访问说明页面
-create_access_info_file
-
-# 8. 测试并重载Nginx配置
-test_and_start_nginx
-
-# 9. 验证自动续签设置
-verify_auto_renewal
-
-# 10. 配置防火墙
-configure_firewall
-
-# --- 完成 ---
-print_info "==========================================================="
-print_info "            流媒体转发配置已完成！"
-print_info "-----------------------------------------------------------"
-if [[ "$URL_TYPE_CHOICE" == "1" ]]; then
-    print_info "访问地址:      https://$DOMAIN$STREAM_PATH"
-    print_info "后端服务:      $BACKEND_URL"
-else
-    print_info "访问地址:      https://$DOMAIN$STREAM_PATH"
-    print_info "完整M3U8地址:  https://$DOMAIN$STREAM_PATH$M3U8_FILE"
-    print_info "后端服务:      $BACKEND_URL$BACKEND_PATH$M3U8_FILE"
-fi
-print_info "用户名:        $AUTH_USER"
-print_info "密码:          [已设置]"
-print_info "-----------------------------------------------------------"
-print_info "证书路径:      /etc/letsencrypt/live/$DOMAIN/"
-print_info "密码文件:      /etc/nginx/auth/.htpasswd"
-print_info "日志文件:      /var/log/nginx/stream_auth.log"
-print_info "-----------------------------------------------------------"
-print_info "访问信息页面:  http://$DOMAIN:8080 (可选，端口8080)"
-print_info "-----------------------------------------------------------"
-print_info "如需修改密码，请运行:"
-print_info "sudo htpasswd -c /etc/nginx/auth/.htpasswd $AUTH_USER"
-print_info "如需添加新用户，请运行:"
-print_info "sudo htpasswd /etc/nginx/auth/.htpasswd 新用户名"
-print_info "==========================================================="
-
-exit 0_stream_proxy_config {
-    print_info "生成 Nginx 流媒体代理配置..."
-    
-    # 定义证书路径
-    local ssl_cert="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-    local ssl_key="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
-
-    # 检查证书文件是否实际存在
-    if [ ! -f "$ssl_cert" ] || [ ! -f "$ssl_key" ]; then
-        print_error "证书文件未在预期路径找到: $ssl_cert 或 $ssl_key"
-        print_error "无法生成 Nginx 配置。"
-        exit 1
-    fi
-
-    # 创建Nginx站点配置
-    local nginx_conf="/etc/nginx/sites-available/stream_proxy_$DOMAIN"
-    
-    # 根据URL类型选择不同的代理配置
-    if [[ "$URL_TYPE_CHOICE" == "1" ]]; then
-        # 基础URL模式
-        sudo tee "$nginx_conf" > /dev/null << EOF
-# --- HTTPS Server Block for $DOMAIN ---
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-
-    # --- Domain ---
-    server_name $DOMAIN;
-
-    # --- SSL/TLS Certificate Configuration ---
-    ssl_certificate     $ssl_cert;
-    ssl_certificate_key $ssl_key;
-
-    # --- SSL/TLS Security Settings ---
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
-
-    # --- Stream Proxy Location with Password and Logging ---
-    location $STREAM_PATH {
-        # --- Password Protection ---
-        auth_basic "Password Protected Stream";
-        auth_basic_user_file /etc/nginx/auth/.htpasswd;
-
-        # --- Reverse Proxy Settings ---
-        proxy_pass $BACKEND_URL/;
-        proxy_set_header Host $BACKEND_HOST;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_redirect off;
-
-        # --- Access Log ---
-        access_log /var/log/nginx/stream_auth.log auth_log;
-    }
-
-    # Other paths return 403 Forbidden
-    location / {
-        return 403 "Forbidden";
-    }
-}
-EOF
-    else
-        # 完整m3u8文件URL模式
-        sudo tee "$nginx_conf" > /dev/null << EOF
-# --- HTTPS Server Block for $DOMAIN ---
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-
-    # --- Domain ---
-    server_name $DOMAIN;
-
-    # --- SSL/TLS Certificate Configuration ---
-    ssl_certificate     $ssl_cert;
-    ssl_certificate_key $ssl_key;
-
-    # --- SSL/TLS Security Settings ---
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
-
-    # --- Stream Proxy Location with Password and Logging ---
-    location $STREAM_PATH {
-        # --- Password Protection ---
-        auth_basic "Password Protected Stream";
-        auth_basic_user_file /etc/nginx/auth/.htpasswd;
-
-        # --- Reverse Proxy Settings ---
-        proxy_pass $BACKEND_URL$BACKEND_PATH;
-        proxy_set_header Host $BACKEND_HOST;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_redirect off;
-
-        # --- Access Log ---
-        access_log /var/log/nginx/stream_auth.log auth_log;
-    }
-
-    # 添加M3U8文件专用路径
-    location $STREAM_PATH$M3U8_FILE {
-        # --- Password Protection ---
-        auth_basic "Password Protected Stream";
-        auth_basic_user_file /etc/nginx/auth/.htpasswd;
-
-        # --- Reverse Proxy Settings ---
-        proxy_pass $BACKEND_URL$BACKEND_PATH$M3U8_FILE;
-        proxy_set_header Host $BACKEND_HOST;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_redirect off;
-
-        # --- Access Log ---
-        access_log /var/log/nginx/stream_auth.log auth_log;
-    }
-
-    # Other paths return 403 Forbidden
-    location / {
-        return 403 "Forbidden";
-    }
-}
-EOF
-    fi
-
-    # HTTP重定向配置
-    sudo tee -a "$nginx_conf" > /dev/null << EOF
-
-# --- HTTP to HTTPS Redirect ---
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-EOF
-
-    # 启用站点配置
-    if [ ! -L "/etc/nginx/sites-enabled/stream_proxy_$DOMAIN" ]; then
-        sudo ln -s "$nginx_conf" "/etc/nginx/sites-enabled/stream_proxy_$DOMAIN"
-    fi
-
-    print_info "Nginx 流媒体代理配置已生成并启用。"
-}
-
-# --- Function to Test Config and Start/Reload Nginx ---
-function test_and_start_nginx {
-    print_info "检查并重载 Nginx 配置..."
-    if sudo nginx -t; then
-        if systemctl is-active --quiet nginx; then
-            sudo systemctl reload nginx
-        else
-            sudo systemctl start nginx
-        fi
-        print_info "Nginx 配置已成功应用。"
-    else
-        print_error "Nginx 配置测试失败！请检查配置文件。"
-        exit 1
-    fi
-}
-
-# --- Function to Verify Auto Renewal ---
-function verify_auto_renewal {
-    print_info "验证自动续签设置..."
-    local timer_active=false
-    local cron_exists=false
-
-    # Check systemd timer
-    if systemctl list-unit-files | grep -q 'certbot.timer'; then
-        if sudo systemctl is-active --quiet certbot.timer; then 
-            print_info "certbot.timer 正在运行。"; 
-            timer_active=true; 
-        else 
-            print_warning "Certbot systemd 定时器存在但未运行。尝试启动..."; 
-            sudo systemctl start certbot.timer && sudo systemctl enable certbot.timer && timer_active=true || print_error "启动 Certbot timer 失败。"; 
-        fi
-    fi
-    
-    # Check cron job
-    if [ -f /etc/cron.d/certbot ]; then 
-        print_info "certbot cron 任务存在。"; 
-        cron_exists=true; 
-    fi
-    
-    if ! $timer_active && ! $cron_exists; then 
-        print_warning "警告：未找到有效的 Certbot 自动续签任务。"; 
-    fi
-
-    print_info "已配置自动续签，将在证书到期前自动续签。"
-}
-
-# --- Function to Configure Firewall ---
-function configure_firewall {
-    # Check if ufw is installed and enabled
-    if command_exists ufw && sudo ufw status | grep -q "Status: active"; then
-        print_info "配置防火墙规则..."
-        sudo ufw allow 'Nginx Full' || print_warning "添加防火墙规则失败。"
-        sudo ufw reload || print_warning "重新加载防火墙规则失败。"
-        print_info "防火墙规则已更新。"
-    else
-        print_info "UFW防火墙未启用或未安装，跳过防火墙配置。"
-    fi
-}
-
 # --- 创建简单的访问说明页面 ---
 function create_access_info_file {
     print_info "创建访问说明页面..."
@@ -652,6 +384,247 @@ EOF
     print_info "访问说明页面已创建: $access_file"
 }
 
+# --- Function to Generate Nginx Stream Proxy Config ---
+function generate_stream_proxy_config {
+    print_info "生成 Nginx 流媒体代理配置..."
+    
+    # 定义证书路径
+    local ssl_cert="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    local ssl_key="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+
+    # 检查证书文件是否实际存在
+    if [ ! -f "$ssl_cert" ] || [ ! -f "$ssl_key" ]; then
+        print_error "证书文件未在预期路径找到: $ssl_cert 或 $ssl_key"
+        print_error "无法生成 Nginx 配置。"
+        exit 1
+    fi
+
+    # 创建Nginx站点配置
+    local nginx_conf="/etc/nginx/sites-available/stream_proxy_$DOMAIN"
+    
+    # 根据URL类型选择不同的代理配置
+    if [[ "$URL_TYPE_CHOICE" == "1" ]]; then
+        # 基础URL模式
+        sudo tee "$nginx_conf" > /dev/null << EOF
+# --- HTTPS Server Block for $DOMAIN ---
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+
+    # --- Domain ---
+    server_name $DOMAIN;
+
+    # --- SSL/TLS Certificate Configuration ---
+    ssl_certificate     $ssl_cert;
+    ssl_certificate_key $ssl_key;
+
+    # --- SSL/TLS Security Settings ---
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # --- 访问信息页面位置 ---
+    location /info/ {
+        alias /var/www/html/access_info_$DOMAIN/;
+        index index.html;
+        try_files \$uri \$uri/ =404;
+    }
+
+    # --- Stream Proxy Location with Password and Logging ---
+    location $STREAM_PATH {
+        # --- Password Protection ---
+        auth_basic "Password Protected Stream";
+        auth_basic_user_file /etc/nginx/auth/.htpasswd;
+
+        # --- Reverse Proxy Settings ---
+        proxy_pass $BACKEND_URL/;
+        proxy_set_header Host $BACKEND_HOST;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_redirect off;
+
+        # --- Access Log ---
+        access_log /var/log/nginx/stream_auth.log auth_log;
+    }
+
+    # Other paths return 403 Forbidden
+    location / {
+        return 301 /info/;
+    }
+}
+EOF
+    else
+        # 完整m3u8文件URL模式
+        sudo tee "$nginx_conf" > /dev/null << EOF
+# --- HTTPS Server Block for $DOMAIN ---
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+
+    # --- Domain ---
+    server_name $DOMAIN;
+
+    # --- SSL/TLS Certificate Configuration ---
+    ssl_certificate     $ssl_cert;
+    ssl_certificate_key $ssl_key;
+
+    # --- SSL/TLS Security Settings ---
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # --- 访问信息页面位置 ---
+    location /info/ {
+        alias /var/www/html/access_info_$DOMAIN/;
+        index index.html;
+        try_files \$uri \$uri/ =404;
+    }
+
+    # --- Stream Proxy Location with Password and Logging ---
+    location $STREAM_PATH {
+        # --- Password Protection ---
+        auth_basic "Password Protected Stream";
+        auth_basic_user_file /etc/nginx/auth/.htpasswd;
+
+        # --- Reverse Proxy Settings ---
+        proxy_pass $BACKEND_URL$BACKEND_PATH;
+        proxy_set_header Host $BACKEND_HOST;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_redirect off;
+
+        # --- Access Log ---
+        access_log /var/log/nginx/stream_auth.log auth_log;
+    }
+
+    # 添加M3U8文件专用路径
+    location $STREAM_PATH$M3U8_FILE {
+        # --- Password Protection ---
+        auth_basic "Password Protected Stream";
+        auth_basic_user_file /etc/nginx/auth/.htpasswd;
+
+        # --- Reverse Proxy Settings ---
+        proxy_pass $BACKEND_URL$BACKEND_PATH$M3U8_FILE;
+        proxy_set_header Host $BACKEND_HOST;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_redirect off;
+
+        # --- Access Log ---
+        access_log /var/log/nginx/stream_auth.log auth_log;
+    }
+
+    # Other paths return to info page
+    location / {
+        return 301 /info/;
+    }
+}
+EOF
+    fi
+
+    # HTTP重定向配置
+    sudo tee -a "$nginx_conf" > /dev/null << EOF
+
+# --- HTTP to HTTPS Redirect ---
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
+EOF
+
+    # 启用站点配置
+    if [ ! -L "/etc/nginx/sites-enabled/stream_proxy_$DOMAIN" ]; then
+        sudo ln -s "$nginx_conf" "/etc/nginx/sites-enabled/stream_proxy_$DOMAIN"
+    fi
+
+    print_info "Nginx 流媒体代理配置已生成并启用。"
+}
+
+# --- Function to Test Config and Start/Reload Nginx ---
+function test_and_start_nginx {
+    print_info "检查并重载 Nginx 配置..."
+    if sudo nginx -t; then
+        if systemctl is-active --quiet nginx; then
+            sudo systemctl reload nginx
+        else
+            sudo systemctl start nginx
+        fi
+        print_info "Nginx 配置已成功应用。"
+    else
+        print_error "Nginx 配置测试失败！请检查配置文件。"
+        exit 1
+    fi
+}
+
+# --- Function to Verify Auto Renewal ---
+function verify_auto_renewal {
+    print_info "验证自动续签设置..."
+    local timer_active=false
+    local cron_exists=false
+
+    # Check systemd timer
+    if systemctl list-unit-files | grep -q 'certbot.timer'; then
+        if sudo systemctl is-active --quiet certbot.timer; then 
+            print_info "certbot.timer 正在运行。"; 
+            timer_active=true; 
+        else 
+            print_warning "Certbot systemd 定时器存在但未运行。尝试启动..."; 
+            sudo systemctl start certbot.timer && sudo systemctl enable certbot.timer && timer_active=true || print_error "启动 Certbot timer 失败。"; 
+        fi
+    fi
+    
+    # Check cron job
+    if [ -f /etc/cron.d/certbot ]; then 
+        print_info "certbot cron 任务存在。"; 
+        cron_exists=true; 
+    fi
+    
+    if ! $timer_active && ! $cron_exists; then 
+        print_warning "警告：未找到有效的 Certbot 自动续签任务。"; 
+    fi
+
+    print_info "已配置自动续签，将在证书到期前自动续签。"
+}
+
+# --- Function to Configure Firewall ---
+function configure_firewall {
+    # Check if ufw is installed and enabled
+    if command_exists ufw && sudo ufw status | grep -q "Status: active"; then
+        print_info "配置防火墙规则..."
+        sudo ufw allow 'Nginx Full' || print_warning "添加防火墙规则失败。"
+        sudo ufw reload || print_warning "重新加载防火墙规则失败。"
+        print_info "防火墙规则已更新。"
+    else
+        print_info "UFW防火墙未启用或未安装，跳过防火墙配置。"
+    fi
+}
+
 # --- Main Execution Flow ---
 print_info "=== 开始 SSL 证书安装和流媒体转发配置 ==="
 
@@ -674,5 +647,46 @@ if ! obtain_certificate_standalone; then
     exit 1
 fi
 
-# 6. 生成流媒体代理配置
-generate
+# 6. 创建访问说明页面
+create_access_info_file
+
+# 7. 生成流媒体代理配置
+generate_stream_proxy_config
+
+# 8. 测试并重载Nginx配置
+test_and_start_nginx
+
+# 9. 验证自动续签设置
+verify_auto_renewal
+
+# 10. 配置防火墙
+configure_firewall
+
+# --- 完成 ---
+print_info "==========================================================="
+print_info "            流媒体转发配置已完成！"
+print_info "-----------------------------------------------------------"
+if [[ "$URL_TYPE_CHOICE" == "1" ]]; then
+    print_info "访问地址:      https://$DOMAIN$STREAM_PATH"
+    print_info "后端服务:      $BACKEND_URL"
+else
+    print_info "访问地址:      https://$DOMAIN$STREAM_PATH"
+    print_info "完整M3U8地址:  https://$DOMAIN$STREAM_PATH$M3U8_FILE"
+    print_info "后端服务:      $BACKEND_URL$BACKEND_PATH$M3U8_FILE"
+fi
+print_info "用户名:        $AUTH_USER"
+print_info "密码:          [已设置]"
+print_info "-----------------------------------------------------------"
+print_info "证书路径:      /etc/letsencrypt/live/$DOMAIN/"
+print_info "密码文件:      /etc/nginx/auth/.htpasswd"
+print_info "日志文件:      /var/log/nginx/stream_auth.log"
+print_info "-----------------------------------------------------------"
+print_info "访问信息页面:  https://$DOMAIN/info/"
+print_info "-----------------------------------------------------------"
+print_info "如需修改密码，请运行:"
+print_info "sudo htpasswd -c /etc/nginx/auth/.htpasswd $AUTH_USER"
+print_info "如需添加新用户，请运行:"
+print_info "sudo htpasswd /etc/nginx/auth/.htpasswd 新用户名"
+print_info "==========================================================="
+
+exit 0
