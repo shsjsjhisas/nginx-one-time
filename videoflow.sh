@@ -28,7 +28,7 @@ done
 
 # Get Email Address
 while true; do 
-    read -p "请输入您的邮箱地址 (用于 Let's Encrypt 账户和通知): " EMAIL
+    read -p "请输入您的邮箱地址 (用于通知): " EMAIL
     if [[ -z "$EMAIL" ]]; then 
         print_error "邮箱地址不能为空，请重新输入。"
     elif [[ ! "$EMAIL" == *@* ]]; then 
@@ -83,6 +83,42 @@ while true; do
     fi
 done
 
+# Ask for certificate files
+print_info "证书配置:"
+while true; do
+    read -p "您是否已经拥有SSL证书文件? (y/n): " HAS_CERT
+    if [[ "$HAS_CERT" =~ ^[Yy]$ ]]; then
+        while true; do
+            read -p "请输入证书文件路径 (fullchain.pem): " CERT_FILE
+            if [[ -z "$CERT_FILE" ]]; then
+                print_error "证书文件路径不能为空，请重新输入。"
+            elif [[ ! -f "$CERT_FILE" ]]; then
+                print_error "证书文件不存在，请检查路径后重新输入。"
+            else
+                break
+            fi
+        done
+        
+        while true; do
+            read -p "请输入私钥文件路径 (privkey.pem): " KEY_FILE
+            if [[ -z "$KEY_FILE" ]]; then
+                print_error "私钥文件路径不能为空，请重新输入。"
+            elif [[ ! -f "$KEY_FILE" ]]; then
+                print_error "私钥文件不存在，请检查路径后重新输入。"
+            else
+                break
+            fi
+        done
+        break
+    elif [[ "$HAS_CERT" =~ ^[Nn]$ ]]; then
+        print_warning "您需要提供SSL证书文件才能继续。请先获取SSL证书。"
+        print_info "您可以使用Let's Encrypt或其他SSL提供商获取证书。"
+        exit 1
+    else
+        print_error "请输入 'y' 或 'n'。"
+    fi
+done
+
 # --- Configuration Confirmation ---
 echo
 print_info "--- 请确认以下信息 ---"
@@ -92,6 +128,8 @@ print_info "后端URL:       $BACKEND_URL"
 print_info "流媒体路径:    $STREAM_PATH"
 print_info "认证用户名:    $AUTH_USER"
 print_info "认证密码:      [已设置]"
+print_info "证书文件:      $CERT_FILE"
+print_info "私钥文件:      $KEY_FILE"
 print_info "-------------------------"
 read -p "信息是否正确？按 Enter 键继续，按 Ctrl+C 取消..." confirm_enter_key
 echo
@@ -103,10 +141,6 @@ function install_prerequisites {
 
     # Essential for web serving & proxy
     if ! command_exists nginx; then packages_to_install+=("nginx"); fi
-
-    # Essential for Let's Encrypt certificates
-    if ! command_exists certbot; then packages_to_install+=("certbot"); fi
-    if ! package_installed python3-certbot-nginx; then packages_to_install+=("python3-certbot-nginx"); fi
 
     # Essential for password authentication
     if ! command_exists htpasswd; then packages_to_install+=("apache2-utils"); fi
@@ -121,27 +155,28 @@ function install_prerequisites {
     fi
 }
 
-# --- Function to Stop Nginx Service ---
-function stop_nginx {
-    if command_exists systemctl && systemctl is-active --quiet nginx; then
-        print_info "正在停止 Nginx 服务以进行证书获取..."
-        sudo systemctl stop nginx || { print_warning "停止 Nginx 失败，可能它没有在运行？"; }
-    else
-        print_info "Nginx 未运行或无法通过 systemctl 管理，跳过停止步骤。"
-    fi
-}
-
-# --- Function to Start Nginx Service ---
-function start_nginx {
-    if command_exists systemctl; then
-        print_info "正在启动 Nginx 服务..."
-        sudo systemctl start nginx || { 
-            print_error "启动 Nginx 失败。请检查 'sudo systemctl status nginx' 和 'sudo journalctl -xeu nginx.service'"
-            exit 1
-        }
-    else
-        print_warning "无法使用 systemctl 启动 Nginx。"
-    fi
+# --- Function to Create Certificate Directory ---
+function create_cert_directory {
+    print_info "创建证书目录..."
+    sudo mkdir -p "/root/cert/$DOMAIN"
+    
+    # 复制证书文件到指定目录
+    print_info "复制证书文件到 /root/cert/$DOMAIN/ 目录..."
+    sudo cp "$CERT_FILE" "/root/cert/$DOMAIN/fullchain.pem" || {
+        print_error "复制证书文件失败。"
+        exit 1
+    }
+    
+    sudo cp "$KEY_FILE" "/root/cert/$DOMAIN/privkey.pem" || {
+        print_error "复制私钥文件失败。"
+        exit 1
+    }
+    
+    # 设置正确的权限
+    sudo chmod 644 "/root/cert/$DOMAIN/fullchain.pem"
+    sudo chmod 600 "/root/cert/$DOMAIN/privkey.pem"
+    
+    print_info "证书文件已复制到 /root/cert/$DOMAIN/ 目录。"
 }
 
 # --- Function to Create Password File ---
@@ -189,44 +224,13 @@ function configure_nginx_log_format {
     print_info "Nginx 日志格式已配置。"
 }
 
-# --- Function to Obtain Certificate using Standalone mode ---
-function obtain_certificate_standalone {
-    local domain_args=("-d" "$DOMAIN")
-    local cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-
-    # Check if certificate already exists
-    if [ -f "$cert_path" ]; then
-        print_info "证书似乎已存在于 $cert_path。尝试续签..."
-        sudo certbot renew --cert-name "$DOMAIN" \
-            --pre-hook "systemctl stop nginx" \
-            --post-hook "systemctl start nginx" || {
-            print_error "证书续签失败。"
-            exit 1
-        }
-        print_info "证书续签（如果需要）完成。"
-        return 0 # Indicate success/completion
-    fi
-
-    print_info "为域名 ${domain_args[*]} 获取新的 Let's Encrypt 证书 (Standalone 模式)..."
-    sudo certbot certonly --standalone --agree-tos --no-eff-email -n \
-        "${domain_args[@]}" \
-        -m "$EMAIL" \
-        --deploy-hook "systemctl restart nginx" \
-        --pre-hook "systemctl stop nginx" \
-        --post-hook "systemctl start nginx" \
-        || { print_error "Certbot 获取证书失败 (certonly --standalone)。"; return 1; }
-
-    print_info "证书获取成功。"
-    return 0 # Indicate success
-}
-
 # --- Function to Generate Nginx Stream Proxy Config ---
 function generate_stream_proxy_config {
     print_info "生成 Nginx 流媒体代理配置..."
     
     # 定义证书路径
-    local ssl_cert="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-    local ssl_key="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    local ssl_cert="/root/cert/$DOMAIN/fullchain.pem"
+    local ssl_key="/root/cert/$DOMAIN/privkey.pem"
 
     # 检查证书文件是否实际存在
     if [ ! -f "$ssl_cert" ] || [ ! -f "$ssl_key" ]; then
@@ -320,36 +324,6 @@ function test_and_start_nginx {
     fi
 }
 
-# --- Function to Verify Auto Renewal ---
-function verify_auto_renewal {
-    print_info "验证自动续签设置..."
-    local timer_active=false
-    local cron_exists=false
-
-    # Check systemd timer
-    if systemctl list-unit-files | grep -q 'certbot.timer'; then
-        if sudo systemctl is-active --quiet certbot.timer; then 
-            print_info "certbot.timer 正在运行。"; 
-            timer_active=true; 
-        else 
-            print_warning "Certbot systemd 定时器存在但未运行。尝试启动..."; 
-            sudo systemctl start certbot.timer && sudo systemctl enable certbot.timer && timer_active=true || print_error "启动 Certbot timer 失败。"; 
-        fi
-    fi
-    
-    # Check cron job
-    if [ -f /etc/cron.d/certbot ]; then 
-        print_info "certbot cron 任务存在。"; 
-        cron_exists=true; 
-    fi
-    
-    if ! $timer_active && ! $cron_exists; then 
-        print_warning "警告：未找到有效的 Certbot 自动续签任务。"; 
-    fi
-
-    print_info "已配置自动续签，将在证书到期前自动续签。"
-}
-
 # --- Function to Configure Firewall ---
 function configure_firewall {
     # Check if ufw is installed and enabled
@@ -364,37 +338,27 @@ function configure_firewall {
 }
 
 # --- Main Execution Flow ---
-print_info "=== 开始 SSL 证书安装和流媒体转发配置 ==="
+print_info "=== 开始流媒体转发配置 ==="
 
 # 1. 安装必备软件包
 install_prerequisites
 
-# 2. 创建密码文件
+# 2. 创建证书目录并复制证书
+create_cert_directory
+
+# 3. 创建密码文件
 create_password_file
 
-# 3. 配置Nginx日志格式
+# 4. 配置Nginx日志格式
 configure_nginx_log_format
 
-# 4. 停止 Nginx (为 certonly --standalone 做准备)
-stop_nginx
-
-# 5. 获取证书 (Standalone 模式) 
-if ! obtain_certificate_standalone; then
-    print_warning "证书获取失败。尝试重新启动 Nginx (如果之前在运行)..."
-    start_nginx
-    exit 1
-fi
-
-# 6. 生成流媒体代理配置
+# 5. 生成流媒体代理配置
 generate_stream_proxy_config
 
-# 7. 测试并重载Nginx配置
+# 6. 测试并重载Nginx配置
 test_and_start_nginx
 
-# 8. 验证自动续签设置
-verify_auto_renewal
-
-# 9. 配置防火墙
+# 7. 配置防火墙
 configure_firewall
 
 # --- 完成 ---
@@ -406,7 +370,7 @@ print_info "用户名:        $AUTH_USER"
 print_info "密码:          [已设置]"
 print_info "后端服务:      $BACKEND_URL"
 print_info "-----------------------------------------------------------"
-print_info "证书路径:      /etc/letsencrypt/live/$DOMAIN/"
+print_info "证书路径:      /root/cert/$DOMAIN/"
 print_info "密码文件:      /etc/nginx/auth/.htpasswd"
 print_info "日志文件:      /var/log/nginx/stream_auth.log"
 print_info "-----------------------------------------------------------"
