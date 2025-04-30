@@ -55,13 +55,7 @@ function install_prerequisites {
 
     # Essential for Let's Encrypt certificates
     if ! command_exists certbot; then packages_to_install+=("certbot"); fi
-    
-    # Check if nginx is installed, and if so, add the nginx plugin
-    if command_exists nginx; then
-        if ! package_installed python3-certbot-nginx; then 
-            packages_to_install+=("python3-certbot-nginx"); 
-        fi
-    fi
+    if ! package_installed python3-certbot-nginx; then packages_to_install+=("python3-certbot-nginx"); fi
 
     if [ ${#packages_to_install[@]} -gt 0 ]; then
         print_info "需要安装以下软件包: ${packages_to_install[*]}"
@@ -85,27 +79,61 @@ function stop_nginx {
 
 # --- Function to Start Nginx Service ---
 function start_nginx {
-    if command_exists systemctl && command_exists nginx; then
+    if command_exists systemctl; then
         print_info "正在启动 Nginx 服务..."
         sudo systemctl start nginx || { 
             print_warning "启动 Nginx 失败。请检查 'sudo systemctl status nginx' 和 'sudo journalctl -xeu nginx.service'"
         }
     else
-        print_info "Nginx 未安装或无法通过 systemctl 管理，跳过启动步骤。"
+        print_warning "无法使用 systemctl 启动 Nginx。"
     fi
+}
+
+# --- Function to Create Nginx Stop/Start Scripts ---
+function create_hook_scripts {
+    print_info "创建 certbot 钩子脚本..."
+    
+    # 创建临时目录
+    local tmp_dir="/tmp/certbot-hooks"
+    mkdir -p "$tmp_dir"
+    
+    # 创建停止 Nginx 脚本
+    cat > "$tmp_dir/pre-hook.sh" << 'EOF'
+#!/bin/bash
+if command -v nginx > /dev/null && command -v systemctl > /dev/null && systemctl is-active --quiet nginx; then
+    systemctl stop nginx
+fi
+EOF
+    chmod +x "$tmp_dir/pre-hook.sh"
+    
+    # 创建启动 Nginx 脚本
+    cat > "$tmp_dir/post-hook.sh" << 'EOF'
+#!/bin/bash
+if command -v nginx > /dev/null && command -v systemctl > /dev/null; then
+    systemctl start nginx
+fi
+EOF
+    chmod +x "$tmp_dir/post-hook.sh"
+    
+    print_info "钩子脚本已创建: $tmp_dir/pre-hook.sh 和 $tmp_dir/post-hook.sh"
 }
 
 # --- Function to Obtain Certificate using Standalone mode ---
 function obtain_certificate_standalone {
     local domain_args=("-d" "$DOMAIN")
     local cert_path="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    
+    # 创建钩子脚本
+    create_hook_scripts
+    local pre_hook="/tmp/certbot-hooks/pre-hook.sh"
+    local post_hook="/tmp/certbot-hooks/post-hook.sh"
 
     # Check if certificate already exists
     if [ -f "$cert_path" ]; then
         print_info "证书似乎已存在于 $cert_path。尝试续签..."
         sudo certbot renew --cert-name "$DOMAIN" \
-            --pre-hook "command_exists nginx && systemctl stop nginx" \
-            --post-hook "command_exists nginx && systemctl start nginx" || {
+            --pre-hook "$pre_hook" \
+            --post-hook "$post_hook" || {
             print_error "证书续签失败。"
             exit 1
         }
@@ -117,8 +145,8 @@ function obtain_certificate_standalone {
     sudo certbot certonly --standalone --agree-tos --no-eff-email -n \
         "${domain_args[@]}" \
         -m "$EMAIL" \
-        --pre-hook "command_exists nginx && systemctl stop nginx" \
-        --post-hook "command_exists nginx && systemctl start nginx" \
+        --pre-hook "$pre_hook" \
+        --post-hook "$post_hook" \
         || { print_error "Certbot 获取证书失败 (certonly --standalone)。"; return 1; }
 
     print_info "证书获取成功。"
@@ -298,5 +326,8 @@ print_info "- /root/cert/$DOMAIN/cert.pem (仅证书)"
 print_info "-----------------------------------------------------------"
 print_info "证书将自动续签，并在续签后自动复制到配置目录"
 print_info "==========================================================="
+
+# 清理临时钩子脚本
+rm -rf /tmp/certbot-hooks
 
 exit 0
